@@ -112,6 +112,7 @@ def get_agent_class_from_config(config: dict) -> Any:
 
     # get class by string from global path
     agent_class = globals().get(class_string)
+
     assert agent_class, \
         f"{config['algorithm']} does not exist as an implemented class. " \
         f"Check spelling or use a different algorithm."  # config['algorithm']

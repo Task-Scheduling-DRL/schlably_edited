@@ -72,6 +72,7 @@ def training(config: dict, data_train: List[List[Task]], data_val: List[List[Tas
     env, _ = EnvironmentLoader.load(config, data=data_train)
 
     # create Agent model
+    # python -m src.agents.train -fp training/dqn/config_job3_task4_tools0.yaml 입력 시 dqn.py의 DQN class 가져오는 거 확인 완료
     agent = get_agent_class_from_config(config)(env=env, config=config, logger=logger)
 
     # create IntermediateTest class to save new optimum model every <n_test_steps> steps
@@ -83,6 +84,31 @@ def training(config: dict, data_train: List[List[Task]], data_val: List[List[Tas
     agent.learn(total_instances=config['total_instances'], total_timesteps=config['total_timesteps'],
                 intermediate_test=inter_test)
 
+# 참고용 예시 코드
+# 실제론 hyperparameter 중 lambda만 최적화하면 됨
+"""
+def objective(trial):
+    env = gym.make("CartPole-v1")
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+
+    # 최적화할 하이퍼파라미터들의 구간 설정
+    lr = trial.suggest_float("lr", 1e-4, 1e-2)
+    gamma = trial.suggest_float("gamma", 0.9, 1.0)
+    epsilon_start = trial.suggest_float("epsilon_start", 0.9, 1.0)
+    epsilon_end = trial.suggest_float("epsilon_end", 0.01, 0.1)
+    epsilon_decay = trial.suggest_float("epsilon_decay", 0.9, 0.99)
+    memory_size = trial.suggest_int("memory_size", 10000, 100000)
+    batch_size = trial.suggest_int("batch_size", 32, 256)
+    target_update = trial.suggest_int("target_update", 1, 10)
+    episodes = trial.suggest_int("episodes", 100, 500)
+
+    agent = DQNAgent(state_dim, action_dim, memory_size, batch_size, lr, gamma, epsilon_start, epsilon_end, epsilon_decay)
+
+    # 밑의 study.optimize()에서 각 하이퍼파라미터 조합에 대하여 이 return 값이 가장 큰(성능이 가장 좋은) 하이퍼파라미터를 선택
+    # 여기서는 return 값이 전체 episode 중 마지막 10개의 episode들의 reward의 평균으로 설정했으나 나중에 주제/목적에 맞게 커스터마이징
+    return agent.train(episodes, target_update)
+"""
 
 def main(config_file_name: dict = None, external_config: dict = None) -> None:
     """
@@ -120,6 +146,11 @@ def main(config_file_name: dict = None, external_config: dict = None) -> None:
                                             'test_validation_split': config.get('test_validation_split')}},
                               file_path=DATA_DIRECTORY / config['instances_file']
                               )
+    """
+        이 부분을 hyperparamter opmization에 맞게끔 수정해야함
+
+        lambda
+    """
     # training
     training(config=config, data_train=train_data, data_val=val_data, logger=logger)
 

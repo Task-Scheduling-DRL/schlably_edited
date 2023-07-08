@@ -14,6 +14,12 @@ import torch.optim as optim
 from torch.nn import functional as F
 from typing import Tuple, List
 
+from torch.autograd import Variable
+from src.agents.reinforcement_learning.sumtree import SumTree
+
+# 추후 삭제
+import time
+
 from src.utils.logger import Logger
 
 # constants
@@ -32,6 +38,14 @@ class MemoryBuffer:
     :param action_type: Type of the action to be stored in the buffer
 
     """
+
+    # PER 위해 추가
+    e = 0.01
+    a = 0.6
+    beta = 0.4
+    beta_increment_per_sampling = 0.001
+    ####
+
     def __init__(self, buffer_size: int, batch_size: int, obs_dim: int, obs_type: type, action_type: type):
 
         self.buffer_size = buffer_size
@@ -46,25 +60,23 @@ class MemoryBuffer:
         self.dones = np.zeros((buffer_size, 1), dtype=np.float32)   # try with   dtype=np.bool
         self.new_obs = np.zeros((buffer_size, obs_dim), dtype=np.float32)
 
+        # SumTree 추가
+        self.tree = SumTree(buffer_size)
+
+    # PER 위해 추가
+    def _get_priority(self, error):
+        return (np.abs(error) + self.e) ** self.a
+
     def __len__(self):
         if self.full:
             return self.buffer_size
         else:
             return self.pos
 
+    # 기존 방식
+    """    
     def store_memory(self, obs, action, reward, done, new_obs) -> None:
-        """
-        Appends all data from the recent step
 
-        :param obs: Observation at the beginning of the step
-        :param action: Index of the selected action
-        :param reward: Reward the env returned in this step
-        :param done: True if the episode ended in this step
-        :param new_obs:  Observation after the step
-
-        :return:
-
-        """
         self.obs[self.pos] = np.array(obs).copy()
         self.actions[self.pos] = np.array(action).copy()
         self.rewards[self.pos] = np.array(reward).copy()
@@ -77,19 +89,55 @@ class MemoryBuffer:
         if self.pos == self.buffer_size:
             self.full = True
             self.pos = 0
+    """
 
+    # PER에 맞게 수정한 방식
+    def store_memory(self, error, obs, action, reward, done, new_obs) -> None:
+        
+        sample = (obs, action, reward, done, new_obs)
+        p = self._get_priority(error)
+        self.tree.add(p, sample)
+
+    # 기존 방식
+    """
     def get_samples(self) -> Tuple:
-        """
-        Generates random samples from the stored data
 
-        :return: batch_size samples from the buffer. e.g. obs, actions, ..., new_obs from step 21
-
-        """
-        # generate batch_size random indices in range of current buffer len
         indices = np.random.randint(0, len(self), size=self.batch_size)
 
         return self.obs[indices], self.actions[indices], self.rewards[indices], \
             self.dones[indices], self.new_obs[indices]
+    """
+
+    # PER에 맞게 수정한 방식
+    def get_samples(self):
+
+        batch = []
+        idxs = []
+        segment = self.tree.total() / self.batch_size
+        priorities = []
+
+        self.beta = np.min([1., self.beta + self.beta_increment_per_sampling])
+
+        for i in range(self.batch_size):
+            a = segment * i
+            b = segment * (i + 1)
+
+            s = random.uniform(a, b)
+            (idx, p, data) = self.tree.get(s)
+            priorities.append(p)
+            batch.append(data)
+            idxs.append(idx)
+
+        sampling_probabilities = priorities / self.tree.total()
+        is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
+        is_weight /= is_weight.max()
+
+        return batch, idxs, is_weight
+    
+    # PER 적용 위해 추가
+    def update(self, idx, error):
+        p = self._get_priority(error)
+        self.tree.update(idx, p)
 
 
 class Policy(nn.Module):
@@ -124,7 +172,9 @@ class Policy(nn.Module):
         self.q_net = nn.Sequential(*net_structure)
 
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        ####################################################################################
         self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        ####################################################################################
         self.to(self.device)
 
     def forward(self, obs):
@@ -199,7 +249,7 @@ class DQN:
         self.q_target_net.load_state_dict(self.q_net.state_dict())
         self.memory_buffer = MemoryBuffer(self.buffer_size, self.batch_size, env.observation_space.shape[0],
                                           env.observation_space.dtype, env.action_space.dtype)
-
+        
     def save(self, file: str) -> None:
         """
         Save model as pickle file
@@ -307,7 +357,34 @@ class DQN:
         for _ in range(self.gradient_steps):
 
             # get samples from the buffer
-            obs_arr, action_arr, reward_arr, done_array, new_obs_array = self.memory_buffer.get_samples()
+            # 기존
+            # obs_arr, action_arr, reward_arr, done_array, new_obs_array = self.memory_buffer.get_samples()
+            # 수정
+            batch, idxs, is_weights = self.memory_buffer.get_samples()
+
+            obs_arr = []
+            action_arr = []
+            reward_arr = []
+            done_array = []
+            new_obs_array = []
+
+            for sample in batch:
+                obs, action, reward, done, new_obs = sample
+                # numpy array 형태이고 각 원소는 np.array(list[float]) 타입
+                obs_arr.append(obs.cpu().numpy())
+                action_arr.append(action.cpu().numpy())
+                reward_arr.append(reward.cpu().numpy())
+                done_array.append(done.cpu().numpy())
+                new_obs_array.append(new_obs.cpu().numpy())
+
+            # array의 각 원소는 torch.
+            # obs, new_obs는 내부가 리스트인 torch이고
+            # 나머지는 내부가 스칼라인 torch
+            obs_arr = np.array(obs_arr)
+            action_arr = np.array(action_arr)
+            reward_arr = np.array(reward_arr)
+            done_array = np.array(done_array)
+            new_obs_array = np.array(new_obs_array)
 
             # convert to tensors
             obs = T.tensor(obs_arr, dtype=T.float).to(self.q_target_net.device)
@@ -322,21 +399,35 @@ class DQN:
                 next_q_values = self.q_target_net(new_obs)
                 # Follow greedy policy: use the one with the highest value
                 next_q_values, _ = next_q_values.max(dim=1)
-                # Avoid potential broadcast issue
-                next_q_values = next_q_values.reshape(-1, 1)
+                next_q_values = next_q_values.unsqueeze(1) # 256에서 256 * 1로 변환
                 # 1-dones -> reward + 0 if step is last in episode
+                # shape : target_q_values - 256 * 256 (비정상, 256 * 1이 정상), next_q_values - 256 (비정상, 256 * 1이 정상)
                 target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
             # get all current Q-values for each obs
+            # shape : 256 * 10 (정상)
             current_q_values = self.q_net(obs)
 
+
             # choose Q-Values according to actions
+            # shape : 256 * 1 (정상)
             current_q_values = T.gather(current_q_values, dim=1, index=actions.long())
 
-            # loss computation. MSE also possible
-            loss = F.smooth_l1_loss(current_q_values, target_q_values)
-            losses.append(loss.item())
 
+            # 추가
+            errors = T.abs(current_q_values - target_q_values).data.numpy()
+
+            # priority 업데이트
+            for i in range(self.batch_size):
+                idx = idxs[i]
+                self.memory_buffer.update(idx, errors[i])
+
+            # loss computation. MSE also possible
+            # 기존
+            # loss = F.smooth_l1_loss(current_q_values, target_q_values)
+            # 수정
+            loss = (T.FloatTensor(is_weights) * F.mse_loss(current_q_values, target_q_values)).mean()
+            losses.append(loss.item())
             # update
             self.q_net.optimizer.zero_grad()
             loss.backward()
@@ -346,12 +437,15 @@ class DQN:
 
         self.n_updates += self.gradient_steps
 
+        loss_mean = sum(losses) / len(losses)
+
         # logs
         self.logger.record(
             {
                 'agent_training/exploration rate': self.epsilon,
                 'agent_training/n_updates': self.n_updates,
-                'agent_training/loss': np.mean(losses),
+                # 'agent_training/loss': np.mean(losses),
+                'agent_training/loss': loss_mean,
                 'agent_training/mean_rwd': np.mean(self.reward_info)
             }
         )
@@ -381,6 +475,34 @@ class DQN:
             self.epsilon = self.initial_eps + \
                            (1-self.remaining_progress) * (self.final_eps-self.initial_eps) / self.fraction_eps
 
+    # 추가
+    def append_sample(self, state, action, reward, done, next_state):
+        
+        state = T.tensor([state], dtype=T.float).squeeze().to(self.q_target_net.device)
+        action = T.tensor([action], dtype=T.float).to(self.q_target_net.device)
+        reward = T.tensor([reward], dtype=T.float).to(self.q_target_net.device)
+        done = T.tensor([done], dtype=T.float).to(self.q_target_net.device)
+        next_state = T.tensor([next_state], dtype=T.float).squeeze().to(self.q_target_net.device)
+
+        # no update on the target net -> use no_grad
+        with T.no_grad():
+            # Compute the next Q-values using the target network
+            next_q_values = self.q_target_net(next_state)
+            # Follow greedy policy: use the one with the highest value
+            next_q_values, _ = next_q_values.max(dim = 0)
+            # 1-dones -> reward + 0 if step is last in episode
+            target_q_values = reward + (1 - done) * self.gamma * next_q_values
+
+        # get all current Q-values for each obs
+        current_q_values = self.q_net(state)
+
+        # choose Q-Values according to actions
+        current_q_values = T.gather(current_q_values, dim=0, index=action.long())
+
+        error = abs(current_q_values[0].item() - target_q_values[0].item())
+
+        self.memory_buffer.store_memory(error, state, action, reward, done, next_state)
+
     def learn(self, total_instances: int, total_timesteps: int, intermediate_test=None) -> None:
         """
         Learn over n problem instances or n timesteps (environment steps).
@@ -408,7 +530,8 @@ class DQN:
                 new_obs, reward, done, info = self.env.step(action)
                 self.num_timesteps += 1
                 episode_reward += reward
-                self.memory_buffer.store_memory(obs, action, reward, done, new_obs)
+                # error 추가
+                self.append_sample(obs, action, reward, done, new_obs)
 
                 # call intermediate_test on_step
                 if intermediate_test:
