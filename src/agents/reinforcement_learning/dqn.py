@@ -393,7 +393,6 @@ class DQN:
                 #if is_print:
                 #    print(f"idx : {idx}")
                 if isinstance(sample, int):
-                    print(f"INT - IDX - {idx}")
                     is_int = 1
                      
                 obs, action, reward, done, new_obs = batch[idx - is_int]
