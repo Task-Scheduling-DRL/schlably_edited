@@ -19,6 +19,7 @@ from src.agents.reinforcement_learning.sumtree import SumTree
 
 # 추후 삭제
 import time
+import warnings
 
 from src.utils.logger import Logger
 
@@ -129,6 +130,21 @@ class MemoryBuffer:
             idxs.append(idx)
 
         sampling_probabilities = priorities / self.tree.total()
+        epsilon = 1e-10  # very small value to avoid division by zero
+        sampling_probabilities = np.where(sampling_probabilities == 0, epsilon, sampling_probabilities)
+
+        '''
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('error')
+                is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
+        except RuntimeWarning:
+            print(f"sampling_probabilities = {sampling_probabilities}")
+            print(f"n_entries = {self.tree.n_entries}")
+            print(f"beta = {self.beta}")
+            time.sleep(20)
+        '''
+
         is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
         is_weight /= is_weight.max()
 
@@ -173,7 +189,8 @@ class Policy(nn.Module):
 
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         ####################################################################################
-        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        # self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        self.device = T.device('cpu')
         ####################################################################################
         self.to(self.device)
 
@@ -360,6 +377,7 @@ class DQN:
             # 기존
             # obs_arr, action_arr, reward_arr, done_array, new_obs_array = self.memory_buffer.get_samples()
             # 수정
+            is_print = self.memory_buffer.tree.total() > 147028
             batch, idxs, is_weights = self.memory_buffer.get_samples()
 
             obs_arr = []
@@ -367,9 +385,18 @@ class DQN:
             reward_arr = []
             done_array = []
             new_obs_array = []
-
-            for sample in batch:
-                obs, action, reward, done, new_obs = sample
+            
+            # batch는 list, 256
+            # sample은 tuple, 5
+            for idx, sample in enumerate(batch):
+                is_int = 0
+                #if is_print:
+                #    print(f"idx : {idx}")
+                if isinstance(sample, int):
+                    print(f"INT - IDX - {idx}")
+                    is_int = 1
+                     
+                obs, action, reward, done, new_obs = batch[idx - is_int]
                 # numpy array 형태이고 각 원소는 np.array(list[float]) 타입
                 obs_arr.append(obs.cpu().numpy())
                 action_arr.append(action.cpu().numpy())
